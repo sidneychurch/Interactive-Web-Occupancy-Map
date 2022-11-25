@@ -1,0 +1,52 @@
+#SoArt-Map{
+  display: block;
+  position: absolute;
+  padding: 0px;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.room:hover{
+  stroke: #ff9933 !important;
+  stroke-width:10px;
+  stroke-linejoin: round;
+  /* fill: #002868 !important; */
+  filter: brightness(120%) !important;
+  cursor: pointer;
+}
+
+.unavailable{
+  fill: #336666
+}
+
+.min{
+  fill: #00cc00 !important;
+}
+
+.mid{
+  fill: #Ffff33 !important;
+}
+
+.max{
+  fill: #Ff3333 !important;
+}
+
+.unused{
+  fill: #676767
+}
+
+#info-box {
+  display: none;
+  position: fixed;
+  top: 10px;
+  left: 0px;
+  z-index: 1;
+  background-color: #FFFFFF;
+  border: 2px solid #BF0A30;
+  border-radius: 5px;
+  padding: 5px;
+  font-family: arial;
+  color: #000000;
+}

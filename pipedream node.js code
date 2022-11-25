@@ -1,0 +1,438 @@
+/*
+	After setting up a web trigger and connecting our SuperSaas account info, the following code was used to connect with the API
+	in order to pull reservation changes and update the interactive web page
+
+*/
+
+async (event, steps, auths) => {
+
+/* ---- Version Differences
+   -  This version has all of the calendar IDs hardcoded.
+   -  This has been decided for ease of use and function.
+   -  The first version will pull data from all calendars in the account.
+*/
+
+const axios = require("axios");
+const fetch = require("node-fetch");
+
+/* -- This is from v1. It shouldn't be required unless we want to pull down any new calendat IDs --
+  //this aray will hold all object IDs for each schedule along with their name (format = { id: 111111, name: 'Test02' })
+  //each element can be accessed with the array index and object name, ex. calID[0].id or calID[0].name
+  //**** in the future it might be best to hard code the schedule IDs
+  
+var calID = [];
+
+//this populates the array with the values pulled from supersaas
+calID = await require("@pipedreamhq/platform").axios(this, {
+  url: `https://www.supersaas.com/api/schedules.json`, 
+  params: {
+    account: `${auths.supersaas.account}`,
+    api_key: `${auths.supersaas.api_key}`,
+  },
+})
+
+
+//for debugging
+console.log(calID); 
+     
+*/    
+
+/* - V2 Workflow:
+      -have an array of all calendars that you want to check
+      -use the Availability API (https://www.supersaas.com/info/dev/appointment_api#availability_api) to check the next available appointment time
+        -If the next available time is not until the next day or longer, check to see if there is anything scheduled for today
+          -This will be used to determine if the room is available that day or not so that it can be color coded accordingly
+          -If the next available time is the following day, this doesn't mean that the room isn't available. It may just mean that it's reserved for the
+            day. This is why we'll also check to see if anything is scheduled for the day. If in the end nothing is scheduled and the next available 
+            appointment isn't until the following day, we can conclude that the space isn't available today.
+      -The end result should be a json with an availability attribute added to all of the previously collected info.
+        -If it's been determined that the room is unavailable, then we shouldn't need to check for the additional info.
+
+*/
+
+var calsToCheck = ["506005","506004","506013","505964","505980","506006","506007","506008","506247",
+                   "506018","513493","508340","513502","513497","513500","513501"];
+/*
+  { id: 506005, name: 'DH D200- Fabriation Space' }, 5
+  { id: 506004, name: 'DH C200- Flex Space' }, 5
+  { id: 506013, name: 'DH C316- Critique Space' }, 4
+
+  { id: 506247, name: 'DPS Occupancy' }, 4
+
+  { id: 505964, name: 'DH C300- Print (Screenprint)' }, 4
+  { id: 505980, name: 'DH C301- Print (Litho Relief)' }, 4
+
+  { id: 506006, name: 'DH B305- Physical Computing' }, 4
+  { id: 506007, name: 'DH B309- Classroom Space' }, 5
+  { id: 506008, name: 'DH B302- Sculpture Room' }, 5
+  
+  { id: 506018, name: 'Woodshop Occupancy' }, 4
+
+  { id: 513493, name: 'CFA 303- Multimedia Classroom' }, 5
+  { id: 508340, name: 'CFA 304- Painting Room' }, 5
+  { id: 513502, name: 'CFA 307- ETB Classroom' }, 3
+  { id: 513497, name: 'CFA 308- Drawing Room' }, 5
+  { id: 513500, name: 'CFA 310- Classroom' }, 5
+  { id: 513501, name: 'CFA 313- Drawing Classroom' } ] 5
+*/
+
+/* ----- The Availalbility API uses a 'from time' and checks from that time forward when the next available slot is
+        -For my purposes, I'll grab the current date and make the from time 8am (before anything could be scheduled for the day)
+ 
+  The format needed for each and additional input can be found at: https://www.supersaas.com/info/dev/appointment_api#availability_api
+    Example URL Format needed:
+      https://www.supersaas.com/api/free/506005.json?from=2020-08-16%2010:00:00&api_key=your_api_key
+      https://www.supersaas.com/api/free/506005.json?from=2020-08-17%2008:00:00&api_key=your_api_key
+*/
+
+//Grab the current US-EST Date and time (This will return a String)
+var today = new Date().toLocaleString("en-US", {timeZone: "America/New_York"});
+
+//Reformat that String into a new Date object so that we can use it
+  //This will be the time that we check from in the query
+var currentTime = new Date(today);
+
+//Now let's get it so that we can use it in our URL:
+//we make the current EST time into an ISO string, which is the format we need
+var calFromDate = currentTime.toISOString();
+  //we then just grab the date
+ calFromDate = calFromDate.substring(0,10);
+//and then hard code the time to be 8am
+var calFromTime = '%2008:00:00';
+var calEndDay = new Date(today);
+calEndDay.setHours(4);
+calEndDay.setMinutes(20);
+
+//this array will hold each booking
+var currentlyScheduled = [];
+
+for (i = 0; i < calsToCheck.length; i++) {
+  
+  //var calEvents = await getData('https://www.supersaas.com/api/range/202068.json?api_key=' + auths.supersaas.api_key + '&today=true');
+   var availability = await getData('https://www.supersaas.com/api/free/' + calsToCheck[i] + '.json?from=' + calFromDate + 
+                                    calFromTime + '&api_key=' + auths.supersaas.api_key + '&maxresults=1');
+    /* returns json
+          { slots:
+            [ { id: 733495,
+                name: 'Slot 1',
+                count: 1,
+                start: '2020-08-18T09:30',
+                finish: '2020-08-18T10:00' } ] }
+                
+                */
+
+  var nextAvail  = new Date(availability.slots[0].start);
+
+  //the reservation object will keep track of all the things we want to note from each schedule
+      //but we only care about the schedule if there is something currently scheduled
+    var reservation = {
+        scheduleID : calsToCheck[i],
+        name: ' ',
+        available : false,
+        capacity : 5,
+        totalReservations : 0,
+        inUse : []
+      };
+
+  //console.log('next ' + nextAvail.getDate());   
+
+  calNameCap(calsToCheck[i]);
+
+  if (nextAvail.getDate() == currentTime.getDate())
+  {
+    reservation.available = true;
+    //console.log('Available today');  
+  }
+
+  //get today's current scheduled events for each calendar
+  var calEvents = await getData('https://www.supersaas.com/api/range/' + calsToCheck[i] + '.json?api_key=' + auths.supersaas.api_key + '&today=true');
+  //first check to see if the calendar is a resource calendar, which will have defined bookings objects
+    //a capacity calendar will have slots objects
+  //then check the first booking element of each schedule
+    //if the first element is defined then there are bookings for the day that we should process
+  if (calEvents.bookings !== undefined && calEvents.bookings[0] !== undefined) {
+      reservation.available = true;
+      //debugging
+      //console.log('calEvents.bookings /n ' + calEvents.bookings);
+      //console.log('Object.keys(calEvents.bookings).length: ' + Object.keys(calEvents.bookings).length);
+
+    //now we'll loop through each booking for the day
+      //to find out how many bookings are inside of calEvents we'll use Object.keys(calEvents.bookings).length
+    for (j = 0; j < Object.keys(calEvents.bookings).length; j++){
+      //check the finish time against the current time
+
+        //ex. output calEvents.bookings[0].finish = '2020-07-10T15:30'
+        //debugging
+        //console.log(calEvents.bookings[j]);
+
+      var finishTime = new Date(today);
+      //set the hour and minutes of the event's finish time
+      finishTime.setHours(calEvents.bookings[j].finish.substr(11,2));
+      finishTime.setMinutes(calEvents.bookings[j].finish.substr(14,2));
+
+     // console.log("Finish Time: " + finishTime);
+     // console.log("Current Time: " + currentTime);
+     // console.log(finishTime > currentTime);
+
+      //compare the finish time against the current time
+      if (finishTime > currentTime){
+        //if the finish time is greater than the current time, the event has yet to finish
+        //so let's check the start time
+        var startTime = new Date(today);
+        startTime.setHours(calEvents.bookings[j].start.substr(11,2));
+        startTime.setMinutes(calEvents.bookings[j].start.substr(14,2));
+        //console.log("Start Time: " + startTime);
+        //console.log("Current Time: " + currentTime);
+        //console.log(startTime < currentTime);
+        //if the start time is before the current time, then the event is happening now
+        if (startTime < currentTime) {
+          //add 1 to the totalReservations so we can keep track of how many slots are in use currently
+          reservation.totalReservations += 1;
+          //let's also make a note of what is in use
+          reservation.inUse.push(calEvents.bookings[j].res_name);
+         // console.log("Things currently scheduled");
+        }
+      } 
+    }// -- End Object.keys For Loop
+
+    
+
+  }// -- End if bookings defined check
+  //add the recently made reservation object to the currentlyScheduled array
+    currentlyScheduled.push(reservation);
+    //console.log(reservation);
+}// -- End calsToCheck.length For Loop
+
+
+ /*----------- Accessing the Data
+    Each element in the schedules array contains a bookings object
+      There should be an element for each calendar that was read in
+    Each bookings object contains an array of objects
+    Each of those names carry their respective data
+
+    This means that schedules[0] contains all of the bookings that have taken place so far today on the first calendar
+    schedules[0].bookings[0] contains all of the info on the first reservation of the day
+    schedules[0].bookings[0].start holds the time that the first event was scheduled to start
+
+    object names that are needed:
+      start    - Time the reservation starts
+      finish   - Time the reservation is set to end
+      res_name - The name of the thing reserved (equipment / person / slot / etc.)
+      deleted  - This tells if the reservation was deleted or not. This may not be needed, but I thought I would note it if an additional
+                  booking pops up when a reservation is deleted. If so, this could lead to false positives.
+
+
+   ----------- Formatting the Data
+    -check each schedule for bookings. If no bookings have been made, 
+    -Look at the finish time first. If it's less than the current time, we don't care about it.
+    -If the finish time is greater than the current time, we need to look at the start time.
+    -If the start time is greater than the current time, we don't care about the even because it hasn't happened yet.
+      -If the start time is less that the current time, we care about this event
+    -In an array for each schedule with a reservation, store the name of the item / thing in use.
+    -The length of the array will let us know how many things are in use in a given space
+*/
+
+
+//this function will populate each currentlyScheduled[] element
+async function getData(url) {
+    const response = await fetch(url);
+    return response.json()
+}
+
+ function calNameCap(id) {
+  switch (id)
+  {
+    case '506005':
+      reservation.name = 'D200-Fab. Space';
+      reservation.capacity = 5;
+      break;
+    case '506004':
+      reservation.name = 'C200-Flex Space';
+      reservation.capacity = 5;
+      break;
+    case '506013':
+      reservation.name = 'C316-Crit Space';
+      reservation.capacity = 4;
+      break;
+    case '505964':
+      reservation.name = 'C300-Screenprinting';
+      reservation.capacity = 4;
+      break;
+    case '505980':
+      reservation.name = 'C301-Litho Relief';
+      reservation.capacity = 4;
+      break;
+    case '506006':
+      reservation.name = 'B305-Physical Computing';
+      reservation.capacity = 4;
+      break;
+    case '506007':
+      reservation.name = 'B309-Classroom Space';
+      reservation.capacity = 5;
+      break;
+    case '506008':
+      reservation.name = 'B302-Sculpture Room';
+      reservation.capacity = 5;
+      break;
+    case '506247':
+      reservation.name = 'C308-DPS';
+      reservation.capacity = 4;
+      break;
+    case '506018':
+      reservation.name = 'C202-Woodshop';
+      reservation.capacity = 4;
+      break;
+    case '513493':
+      reservation.name = '303-Multimedia Classroom';
+      reservation.capacity = 5;
+      break;
+    case '508340':
+      reservation.name = '304-Painting Room';
+      reservation.capacity = 5;
+      break;
+    case '513502':
+      reservation.name = '307-ETB Classroom';
+      reservation.capacity = 3;
+      break;
+    case '513497':
+      reservation.name = '308-Drawing Room';
+      reservation.capacity = 5;
+      break;
+    case '513500':
+      reservation.name = '310-Classroom';
+      reservation.capacity = 5;
+      break;
+    case '513501':
+      reservation.name = '313-Drawing Classroom';
+      reservation.capacity = 5;
+      break;
+    default:
+      console.log(id + " undefined");
+  }
+  console.log(reservation.name + " , " + reservation.capacity);
+}
+  
+//put all of the info gathered into a JSON
+var scheduleJSON = JSON.stringify(currentlyScheduled);
+
+//send that JSON file to the site that requested it
+$respond({
+    status: 200,
+    headers: { "x-my-custom-header": "value" },
+    body: { message: scheduleJSON } // This can be any string, object, or Buffer
+  })
+
+
+console.log(scheduleJSON);
+
+/*  
+//debugging
+if (currentlyScheduled.length > 0){
+  //https://docs.pipedream.com/destinations/sse/#what-can-i-do-with-the-sse-destination
+  //https://sdk.m.pipedream.net/pipelines/p_wOCWm9/sse
+ // var scheduleJSON = JSON.stringify(currentlyScheduled);
+
+  $send.sse({
+    channel: "schedules",
+    payload: {
+      scheduleJSON
+    }
+  });
+  console.log(scheduleJSON);
+} else {
+   $send.sse({
+    channel: "schedules",
+    payload: {
+      //when this gets sent:
+        //testJSON: {"name":"thisName","time":"2020-07-12T16:43:33.000Z"}
+      scheduleJSON
+      //this gets received as an object named data containing a string of "testJSON: {"name":"thisName","time":"2020-07-12T16:43:33.000Z"}"
+      //this means that it has to be parced again
+
+
+      //isScheduled : isScheduled,
+      //createdTime : currentTime
+    }
+  });
+  console.log("Nothing Scheduled Currently")
+  console.log(testObj);
+}
+*/
+
+
+/*
+
+//curious the return of Woodshop test since it's blocked out today
+//id: 505143, name: 'Woodshop Test'
+//https://www.supersaas.com/api/range/505143.json?api_key=13RhSKC2gj3GggHqGgRD6g&from=2020-07-10%2018:45:54&to=2020-07-10%2018:50:54
+
+//3d printer currently has stuff scheduled
+// id: 387537, name: '3D Printer Availability'
+//https://www.supersaas.com/api/range/387537.json?api_key=13RhSKC2gj3GggHqGgRD6g&from=2020-07-10%2018:45:54&to=2020-07-10%2018:50:54
+
+When printing out the entire booking array (console.log(bookings);), this is returned:
+  [ { bookings: [ [Object], [Object], [Object], [Object] ] } ]
+    This example only had one populated element
+
+When printing out that one element (console.log(bookings[0]);), what I want is returned:
+  { bookings:
+   [ { id: 56708610,
+       start: '2020-07-10T14:30',
+       finish: '2020-07-10T15:30',
+       resource_id: 568759,
+       created_on: '2020-07-10T18:48:23Z',
+       user_id: 0,
+       res_name: '3P 120mm x 120mm x 120mm',
+       created_by: 'administrator',
+       price: null,
+       deleted: false,
+       description: '',
+       full_name: 'Sidney Church',
+       phone: '',
+       form_id: 7117760 },
+     { id: 56708836,
+       start: '2020-07-10T14:30',
+       finish: '2020-07-10T15:30',
+       resource_id: 568760,
+       created_on: '2020-07-10T19:04:51Z',
+       user_id: 0,
+       res_name: 'AnyCubic 180mm x 180mm x 300mm',
+       created_by: 'administrator',
+       price: null,
+       deleted: false,
+       description: '',
+       full_name: 'Sidney Church',
+       phone: '',
+       form_id: 7117835 },
+     { id: 56656794,
+       start: '2020-07-10T15:00',
+       finish: '2020-07-10T16:00',
+       resource_id: 568758,
+       created_on: '2020-07-09T01:18:25Z',
+       user_id: 0,
+       res_name: 'A6 220mm x 220mm x 250mm',
+       created_by: 'administrator',
+       price: null,
+       deleted: false,
+       description: '',
+       full_name: 'Sidney Church',
+       phone: '',
+       form_id: 7105991 },
+     { id: 56708839,
+       start: '2020-07-10T15:30',
+       finish: '2020-07-10T16:30',
+       resource_id: 568759,
+       created_on: '2020-07-10T19:05:03Z',
+       user_id: 0,
+       res_name: '3P 120mm x 120mm x 120mm',
+       created_by: 'administrator',
+       price: null,
+       deleted: false,
+       description: '',
+       full_name: 'Sidney Church',
+       phone: '',
+       form_id: 7117836 } ] }
+
+*/
+
+}
